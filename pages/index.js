@@ -19,17 +19,49 @@ export default function Home() {
   const db = getFirestore(app);
 
   useEffect(() => {
-    fetchGames();
+    let isMounted = true;
+    
+    const loadGames = async () => {
+      if (isMounted) {
+        await fetchGames();
+      }
+    };
+    
+    loadGames();
+    
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const fetchGames = async () => {
     try {
       setLoading(true);
+      
       const gamesCollection = collection(db, "Game");
-      const gamesQuery = query(gamesCollection, orderBy("game-time-start"));
-      const gamesSnapshot = await getDocs(gamesQuery);
+      
+      // Try with orderBy first, but fallback to simple query if it fails
+      let gamesQuery;
+      let useOrderBy = true;
+      
+      try {
+        gamesQuery = query(gamesCollection, orderBy("game-time-start"));
+      } catch (queryError) {
+        useOrderBy = false;
+        gamesQuery = gamesCollection;
+      }
+      
+      // Add timeout protection (30 seconds max)
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("Query timeout after 30 seconds")), 30000);
+      });
+      
+      const gamesSnapshot = await Promise.race([
+        getDocs(gamesQuery),
+        timeoutPromise
+      ]);
 
-      const gamesData = gamesSnapshot.docs.map((doc) => ({
+      let gamesData = gamesSnapshot.docs.map((doc) => ({
         id: doc.id,
         parkName: doc.data()["park-name"],
         gameTimeStart: doc.data()["game-time-start"],
@@ -38,9 +70,51 @@ export default function Home() {
         bookedCount: doc.data()["booked-count"] || 0,
       }));
 
+      // Sort manually if we didn't use orderBy
+      if (!useOrderBy && gamesData.length > 0) {
+        gamesData = gamesData.sort((a, b) => {
+          const timeA = a.gameTimeStart?.toMillis?.() || 0;
+          const timeB = b.gameTimeStart?.toMillis?.() || 0;
+          return timeA - timeB;
+        });
+      }
+      
       setGames(gamesData);
     } catch (error) {
       console.error("Error fetching games:", error);
+      
+      // Check for specific error types
+      if (error.code === 'failed-precondition' || error.message?.includes('index')) {
+        // Try fallback query without orderBy
+        try {
+          const fallbackCollection = collection(db, "Game");
+          const fallbackSnapshot = await getDocs(fallbackCollection);
+          
+          let fallbackGames = fallbackSnapshot.docs.map((doc) => ({
+            id: doc.id,
+            parkName: doc.data()["park-name"],
+            gameTimeStart: doc.data()["game-time-start"],
+            gameTimeEnd: doc.data()["game-time-end"],
+            totalPlayers: doc.data()["total-players"],
+            bookedCount: doc.data()["booked-count"] || 0,
+          }));
+          
+          // Sort manually
+          fallbackGames = fallbackGames.sort((a, b) => {
+            const timeA = a.gameTimeStart?.toMillis?.() || 0;
+            const timeB = b.gameTimeStart?.toMillis?.() || 0;
+            return timeA - timeB;
+          });
+          
+          setGames(fallbackGames);
+          return;
+        } catch (fallbackError) {
+          console.error("Fallback query failed:", fallbackError);
+        }
+      }
+      
+      // Set empty array on error
+      setGames([]);
     } finally {
       setLoading(false);
     }
@@ -49,7 +123,6 @@ export default function Home() {
   const handleBookingSuccess = (gameId) => {
     // Don't immediately refresh - let the success modal show first
     // The webhook will update the database, and user can manually refresh if needed
-    console.log("Booking success for game:", gameId);
   };
 
   return (

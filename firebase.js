@@ -17,7 +17,13 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase - check if app already exists to prevent duplicate initialization
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+let app;
+try {
+  app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+} catch (error) {
+  console.error("Error initializing Firebase:", error);
+  throw error;
+}
 
 // Initialize Analytics only on client side
 let analytics;
